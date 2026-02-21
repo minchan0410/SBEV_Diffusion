@@ -1,2 +1,5 @@
 .vscode
+.pt
 mnist_data/
+results/
+dataset/

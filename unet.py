@@ -1,16 +1,14 @@
 import torch
 import torch.nn as nn
 
-
 class ChannelShuffle(nn.Module):
     def __init__(self,groups):
         super().__init__()
         self.groups=groups
     def forward(self,x):
         n,c,h,w=x.shape
-        x=x.view(n,self.groups,c//self.groups,h,w) # group
-        x=x.transpose(1,2).contiguous().view(n,-1,h,w) #shuffle
-        
+        x=x.view(n,self.groups,c//self.groups,h,w)
+        x=x.transpose(1,2).contiguous().view(n,-1,h,w)
         return x
 
 class ConvBnSiLu(nn.Module):
@@ -23,12 +21,8 @@ class ConvBnSiLu(nn.Module):
         return self.module(x)
 
 class ResidualBottleneck(nn.Module):
-    '''
-    shufflenet_v2 basic unit(https://arxiv.org/pdf/1807.11164.pdf)
-    '''
     def __init__(self,in_channels,out_channels):
         super().__init__()
-
         self.branch1=nn.Sequential(nn.Conv2d(in_channels//2,in_channels//2,3,1,1,groups=in_channels//2),
                                     nn.BatchNorm2d(in_channels//2),
                                     ConvBnSiLu(in_channels//2,out_channels//2,1,1,0))
@@ -41,14 +35,10 @@ class ResidualBottleneck(nn.Module):
     def forward(self,x):
         x1,x2=x.chunk(2,dim=1)
         x=torch.cat([self.branch1(x1),self.branch2(x2)],dim=1)
-        x=self.channel_shuffle(x) #shuffle two branches
-
+        x=self.channel_shuffle(x)
         return x
 
 class ResidualDownsample(nn.Module):
-    '''
-    shufflenet_v2 unit for spatial down sampling(https://arxiv.org/pdf/1807.11164.pdf)
-    '''
     def __init__(self,in_channels,out_channels):
         super().__init__()
         self.branch1=nn.Sequential(nn.Conv2d(in_channels,in_channels,3,2,1,groups=in_channels),
@@ -62,14 +52,10 @@ class ResidualDownsample(nn.Module):
 
     def forward(self,x):
         x=torch.cat([self.branch1(x),self.branch2(x)],dim=1)
-        x=self.channel_shuffle(x) #shuffle two branches
-
+        x=self.channel_shuffle(x)
         return x
 
 class TimeMLP(nn.Module):
-    '''
-    naive introduce timestep information to feature maps with mlp and add shortcut
-    '''
     def __init__(self,embedding_dim,hidden_dim,out_dim):
         super().__init__()
         self.mlp=nn.Sequential(nn.Linear(embedding_dim,hidden_dim),
@@ -79,7 +65,6 @@ class TimeMLP(nn.Module):
     def forward(self,x,t):
         t_emb=self.mlp(t).unsqueeze(-1).unsqueeze(-1)
         x=x+t_emb
-  
         return self.act(x)
     
 class EncoderBlock(nn.Module):
@@ -96,7 +81,6 @@ class EncoderBlock(nn.Module):
         if t is not None:
             x=self.time_mlp(x_shortcut,t)
         x=self.conv1(x)
-
         return [x,x_shortcut]
         
 class DecoderBlock(nn.Module):
@@ -116,22 +100,10 @@ class DecoderBlock(nn.Module):
         if t is not None:
             x=self.time_mlp(x,t)
         x=self.conv1(x)
-
         return x        
 
-# unet.py
-import torch
-import torch.nn as nn
-
-# ... (ChannelShuffle, ConvBnSiLu, ResidualBottleneck, ResidualDownsample, TimeMLP 등 위쪽 클래스는 그대로 유지) ...
-
-# Unet 클래스만 아래와 같이 수정하세요
 class Unet(nn.Module):
-    '''
-    simple unet design without attention
-    '''
-    # num_classes=10 인자 추가 (MNIST는 0~9까지 10개 클래스)
-    def __init__(self, timesteps, time_embedding_dim, in_channels=3, out_channels=2, base_dim=32, dim_mults=[2,4,8,16], num_classes=10):
+    def __init__(self, timesteps, time_embedding_dim, in_channels=3, out_channels=3, base_dim=32, dim_mults=[2,4,8,16]):
         super().__init__()
         assert isinstance(dim_mults,(list,tuple))
         assert base_dim%2==0 
@@ -140,9 +112,6 @@ class Unet(nn.Module):
 
         self.init_conv=ConvBnSiLu(in_channels,base_dim,3,1,1)
         self.time_embedding=nn.Embedding(timesteps,time_embedding_dim)
-        
-        # [수정] 레이블(숫자) 임베딩 추가
-        self.label_embedding = nn.Embedding(num_classes, time_embedding_dim)
 
         self.encoder_blocks=nn.ModuleList([EncoderBlock(c[0],c[1],time_embedding_dim) for c in channels])
         self.decoder_blocks=nn.ModuleList([DecoderBlock(c[1],c[0],time_embedding_dim) for c in channels[::-1]])
@@ -152,21 +121,13 @@ class Unet(nn.Module):
 
         self.final_conv=nn.Conv2d(in_channels=channels[0][0]//2,out_channels=out_channels,kernel_size=1)
 
-    # [수정] forward 함수에 y(레이블) 인자 추가
-    def forward(self, x, t=None, y=None):
+    def forward(self, x, t=None):
         x=self.init_conv(x)
         
-        # [수정] 시간 정보와 레이블 정보를 더함
-        if t is not None:
-            t_emb = self.time_embedding(t)
-            if y is not None:
-                t_emb = t_emb + self.label_embedding(y) # Time Embedding에 Class Embedding 더하기
-        else:
-            t_emb = None
+        t_emb = self.time_embedding(t) if t is not None else None
 
         encoder_shortcuts=[]
         for encoder_block in self.encoder_blocks:
-            # 수정된 t_emb를 전달
             x,x_shortcut=encoder_block(x, t_emb)
             encoder_shortcuts.append(x_shortcut)
         x=self.mid_block(x)
@@ -182,13 +143,5 @@ class Unet(nn.Module):
         dims.insert(0,base_dim)
         channels=[]
         for i in range(len(dims)-1):
-            channels.append((dims[i],dims[i+1])) # in_channel, out_channel
-
+            channels.append((dims[i],dims[i+1]))
         return channels
-
-if __name__=="__main__":
-    x=torch.randn(3,3,224,224)
-    t=torch.randint(0,1000,(3,))
-    model=Unet(1000,128)
-    y=model(x,t)
-    print(y.shape)
